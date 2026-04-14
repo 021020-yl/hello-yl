@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>🎬 音视频情感标注系统</title>
+    <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet">
+    <style>
+        body{max-width:1200px;margin:20px auto;padding:20px;font-family:Arial}
+        .panel{border:1px solid #ddd;padding:20px;margin:20px 0;border-radius:8px}
+        .emotion-btn{margin:5px;padding:8px 16px;cursor:pointer;border:none;border-radius:4px}
+        .active{background:#4285f4;color:white}
+        #segments{margin:10px 0}
+        .segment{padding:10px;border:1px solid #eee;margin:5px 0;border-radius:4px}
+        input{padding:6px 8px;margin:0 5px}
+        button{background:#f5f5f5;border:1px solid #ddd;border-radius:4px;padding:8px 16px;cursor:pointer}
+        button:hover{background:#eee}
+    </style>
+</head>
+<body>
+    <h1>🎬 音视频情感标注系统（AVEAS）</h1>
+
+    <div class="panel">
+        <h3>1. 上传音视频</h3>
+        <input type="file" id="fileInput" accept="video/*,audio/*">
+        <button onclick="uploadMedia()">上传文件</button>
+        <div id="playerBox" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="panel">
+        <h3>2. 时序情感标注</h3>
+        <div>
+            <button class="emotion-btn" onclick="setEmotion(this)">快乐</button>
+            <button class="emotion-btn" onclick="setEmotion(this)">悲伤</button>
+            <button class="emotion-btn" onclick="setEmotion(this)">愤怒</button>
+            <button class="emotion-btn" onclick="setEmotion(this)">恐惧</button>
+            <button class="emotion-btn" onclick="setEmotion(this)">中性</button>
+            <button class="emotion-btn" onclick="setEmotion(this)">惊喜</button>
+        </div>
+        <div style="margin:10px 0;">
+            开始时间: <input type="number" id="start" step="0.1" placeholder="0.0">s
+            结束时间: <input type="number" id="end" step="0.1" placeholder="5.0">s
+            <button onclick="addSegment()">添加标注片段</button>
+        </div>
+        <div id="segments">暂无标注片段</div>
+    </div>
+
+    <div class="panel">
+        <h3>3. 提交标注结果</h3>
+        <button onclick="submitAnnotation()">提交并生成JSON</button>
+        <pre id="resultJson" style="background:#f5f5f5;padding:10px;white-space:pre-wrap;"></pre>
+    </div>
+
+<script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
+<script>
+let player;
+let currentEmotion = "";
+let segments = [];
+let mediaUrl = "";
+let fileName = "";
+
+// 上传音视频文件
+function uploadMedia() {
+    const file = document.getElementById('fileInput').files[0];
+    if(!file) return alert("请选择文件");
+    
+    const formData = new FormData();
+    formData.append('media', file);
+    
+    fetch('/upload', {method: 'POST', body: formData})
+      .then(res=>res.json())
+      .then(data=>{
+        mediaUrl = data.file_url;
+        fileName = data.filename;
+        // 创建播放器
+        document.getElementById('playerBox').innerHTML = 
+          `<video id="player" class="video-js vjs-big-play-centered" controls width="800" height="450">
+            <source src="${mediaUrl}" type="${file.type}">
+          </video>`;
+        player = videojs('player');
+        // 自动填充时长
+        player.on('loadedmetadata', () => {
+            document.getElementById('end').value = player.duration().toFixed(1);
+        });
+    }).catch(err=>alert("上传失败："+err.message));
+}
+
+// 选择当前情感标签
+function setEmotion(btn) {
+    document.querySelectorAll('.emotion-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    currentEmotion = btn.innerText;
+}
+
+// 添加标注片段
+function addSegment() {
+    const start = parseFloat(document.getElementById('start').value);
+    const end = parseFloat(document.getElementById('end').value);
+    
+    if(!currentEmotion) return alert("请选择情感标签");
+    if(isNaN(start) || isNaN(end) || start >= end) return alert("时间格式错误");
+    
+    const seg = {
+        start_sec: start,
+        end_sec: end,
+        emotion_label: currentEmotion,
+        note: ""
+    };
+    segments.push(seg);
+    renderSegments();
+}
+
+// 渲染标注片段列表
+function renderSegments() {
+    if(segments.length === 0) {
+        document.getElementById('segments').innerHTML = "暂无标注片段";
+        return;
+    }
+    const html = segments.map((s,i)=>`
+        <div class="segment">
+            ${i+1}. ${s.start_sec}~${s.end_sec}s | ${s.emotion_label}
+            <button onclick="deleteSegment(${i})" style="background:#ff4444;color:white;border:none;padding:4px 8px;border-radius:4px;margin-left:10px;">删除</button>
+        </div>
+    `).join('');
+    document.getElementById('segments').innerHTML = html;
+}
+
+// 删除标注片段
+function deleteSegment(index) {
+    segments.splice(index, 1);
+    renderSegments();
+}
+
+// 提交标注结果
+function submitAnnotation() {
+    if(segments.length === 0) return alert("请添加至少一个标注片段");
+    
+    const data = {
+        media_info: {
+            file_name: fileName,
+            file_type: mediaUrl.includes('video') ? 'video' : 'audio',
+            duration_sec: player?.duration() || 0
+        },
+        overall_emotion: {
+            main_emotion: segments[0].emotion_label,
+            confidence: 1.0
+        },
+        temporal_segments: segments
+    };
+    
+    fetch('/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    }).then(res=>res.json()).then(res=>{
+        document.getElementById('resultJson').innerText = JSON.stringify(data, null, 2);
+        alert(`标注成功！ID: ${res.annotation_id}\nJSON已保存到服务器`);
+    }).catch(err=>alert("提交失败："+err.message));
+}
+</script>
+</body>
+</html>
